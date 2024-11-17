@@ -12,7 +12,7 @@
 __all__ = ['update_wrapper', 'wraps', 'WRAPPER_ASSIGNMENTS', 'WRAPPER_UPDATES',
            'total_ordering', 'cache', 'cmp_to_key', 'lru_cache', 'reduce',
            'partial', 'partialmethod', 'singledispatch', 'singledispatchmethod',
-           'cached_property', 'Placeholder']
+           'cached_property', 'Placeholder', 'retry']
 
 from abc import get_cache_token
 from collections import namedtuple
@@ -21,6 +21,7 @@ from operator import itemgetter
 from reprlib import recursive_repr
 from types import GenericAlias, MethodType, MappingProxyType, UnionType
 from _thread import RLock
+from time import sleep
 
 ################################################################################
 ### update_wrapper() and wraps() decorator
@@ -1121,3 +1122,60 @@ class cached_property:
         return val
 
     __class_getitem__ = classmethod(GenericAlias)
+
+
+################################################################################
+### retry() - simple retry decorator
+################################################################################
+
+def retry(
+    _kwargs=None,
+    *,
+    retry_attempts=3,
+    interval_seconds=0.1,
+    backoff_type="linear",
+    exponential_factor=2,
+):
+    """
+    This function is intended to be used as a decorator and will retry
+    the function that it decorates if an exception is raised in that
+    function.  Several aspects of the retries can be configured with
+    keyword arguments.  Also, no keyword arguments can be used to retry
+    with the default values.
+
+    Further Reading: https://en.wikipedia.org/wiki/Exponential_backoff
+    """
+
+    def _retry(user_function):
+        def _retry_logic(*args, **kwargs):
+            for attempt_number in range(retry_attempts + 1):
+                exception = None
+                try:
+                    return_value = user_function(*args, **kwargs)
+                    return return_value
+                except Exception as e:
+                    exception = e
+                    if attempt_number < retry_attempts:
+                        if backoff_type == "exponential":
+                            sleep(interval_seconds * exponential_factor**attempt_number)
+                        elif backoff_type == "linear":
+                            sleep(interval_seconds)
+
+            # Retry attempts reached, raise new RuntimeError from raised
+            # Exception to clarify stack trace.
+            raise RuntimeError(
+                f"Maximum unsuccessful retry attempts "
+                f"reached ({retry_attempts} retry attempts)."
+            ) from exception
+
+        return _retry_logic
+
+    if backoff_type != "linear" and backoff_type != "exponential":
+        raise TypeError(
+            "Keyword argument backoff_type must be 'exponential' or 'linear'."
+        )
+
+    if _kwargs is None:
+        return _retry
+    else:
+        return _retry(_kwargs)
